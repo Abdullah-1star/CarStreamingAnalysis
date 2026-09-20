@@ -1,90 +1,68 @@
 -- ============================================================
--- Task 2: Windowing TVFs & Real-Time Revenue Aggregation
+-- CartStreamAnalysis - Apache Flink SQL Pipeline
 -- ============================================================
-
 -- ============================================================
--- 1. Kafka Source
+-- 1. SOURCE TABLE
+-- Kafka topic: ecommerce_events
 -- ============================================================
-
 CREATE TABLE ecommerce_events (
-    event_time STRING,
+    event_time_str STRING,
+    event_time AS TO_TIMESTAMP(
+        event_time_str,
+        'yyyy-MM-dd HH:mm:ss z'
+    ),
     event_type STRING,
     product_id BIGINT,
-    category_id BIGINT,
     category_code STRING,
     brand STRING,
-    price DOUBLE,
+    price DECIMAL(10, 2),
     user_id BIGINT,
-    user_session STRING,
-
-    -- Convert string event time to Flink Event Time
-    event_ts AS TO_TIMESTAMP(
-        REPLACE(event_time, ' UTC', '')
-    ),
-
-    -- Allow events to arrive up to 5 seconds late
-    WATERMARK FOR event_ts AS event_ts - INTERVAL '5' SECOND
+    WATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND
 ) WITH (
     'connector' = 'kafka',
-    'topic' = 'kafka-flink-topic',
-    'properties.bootstrap.servers' = 'kafka:9092',    --  ports: - "9092:9092"       
-    'properties.group.id' = 'flink-consumer-group',
+    'topic' = 'ecommerce_events',
+    'properties.bootstrap.servers' = 'kafka:9092',
+    'properties.group.id' = 'flink-cartstream',
     'scan.startup.mode' = 'earliest-offset',
     'format' = 'json'
 );
-
 -- ============================================================
--- 2. Print Sink
+-- 2. SINK TABLE
+-- Print sink for execution verification
 -- ============================================================
-
 CREATE TABLE brand_window_sales (
     window_start TIMESTAMP(3),
     window_end TIMESTAMP(3),
     brand STRING,
     total_orders BIGINT,
     gross_revenue DECIMAL(20, 2),
-    avg_order_value DOUBLE,
+    avg_order_value DECIMAL(20, 2),
     unique_buyers BIGINT
-) WITH (
-    'connector' = 'print'
-);
-
+) WITH ('connector' = 'print');
 -- ============================================================
--- 3. Five-minute Tumbling Window Aggregation
+-- 3. 5-MINUTE TUMBLING WINDOW
+-- Purchase aggregation by brand
 -- ============================================================
-
 INSERT INTO brand_window_sales
-
-SELECT
-    window_start,
+SELECT window_start,
     window_end,
     brand,
-
     COUNT(*) AS total_orders,
-
     CAST(
-        ROUND(SUM(price), 2)
-        AS DECIMAL(20, 2)
+        ROUND(SUM(price), 2) AS DECIMAL(20, 2)
     ) AS gross_revenue,
-
     CAST(
-        AVG(price)
-        AS DOUBLE
+        ROUND(AVG(price), 2) AS DECIMAL(20, 2)
     ) AS avg_order_value,
-
     COUNT(DISTINCT user_id) AS unique_buyers
-
 FROM TABLE(
-    TUMBLE(
-        TABLE ecommerce_events,
-        DESCRIPTOR(event_ts),
-        INTERVAL '5' MINUTE
+        TUMBLE(
+            TABLE ecommerce_events,
+            DESCRIPTOR(event_time),
+            INTERVAL '5' MINUTES
+        )
     )
-)
-
 WHERE event_type = 'purchase'
-
-GROUP BY
-    window_start,
+GROUP BY window_start,
     window_end,
     brand;
